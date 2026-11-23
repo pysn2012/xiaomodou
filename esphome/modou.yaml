@@ -41,6 +41,11 @@ api:
 ota:
   - platform: esphome
     id: ota_esphome
+  - platform: web_server   # 2025.7 起网页 OTA 必须显式声明（breaking change）
+    id: ota_web
+
+web_server:
+  port: 80                 # 网页 OTA 上传页 + 实体控制（无日志页，日志走串口/esphome logs）
 
 wifi:
   ssid: !secret wifi_ssid
