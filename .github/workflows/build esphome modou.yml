@@ -33,16 +33,17 @@ jobs:
             ghcr.io/esphome/esphome:${{ env.ESPHOME_VERSION }} \
             compile /config/modou.yaml
 
-      # 2) 收集产物：*.factory.bin = 合并镜像（bootloader+分区表+app），USB 首烧用；
-      #    firmware.bin = OTA 升级载荷（ESPHome 网页升级 / esphome run 直接用）
+      # 2) 收集产物（注意：产物在 build/ 子目录下，且 OTA 载荷名为 firmware.ota.bin）
+      #    *.factory.bin = 合并镜像（bootloader+分区表+app），USB 首烧用；
+      #    firmware.ota.bin = OTA 升级载荷（ESPHome 网页升级 / esphome run 直接用）
       - name: Collect firmware
         run: |
           mkdir -p artifacts
-          B="esphome/.esphome/build/modou-box"
+          B="esphome/.esphome/build/modou-box/build"
           ls -la "$B"
           cp "$B"/firmware.factory.bin artifacts/esphome_modou_factory.bin 2>/dev/null || true
-          cp "$B"/firmware.bin artifacts/esphome_modou_app.bin 2>/dev/null || true
-          test -f artifacts/esphome_modou_factory.bin || test -f artifacts/esphome_modou_app.bin \
+          cp "$B"/firmware.ota.bin artifacts/esphome_modou_ota.bin 2>/dev/null || true
+          test -f artifacts/esphome_modou_factory.bin || test -f artifacts/esphome_modou_ota.bin \
             || { echo "no firmware output found!"; exit 1; }
           ls -la artifacts
 
