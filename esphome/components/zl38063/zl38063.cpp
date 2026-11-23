@@ -170,21 +170,41 @@ bool Zl38063Component::check_result_zero_() {
 }
 
 bool Zl38063Component::load_firmware_() {
+  // ---- 链路探针 1：INIT 后连读 STATUS/KEY_RAW，判断 HBI 读路径是否活着 ----
+  uint16_t probe = 0;
+  for (int i = 0; i < 3; ++i) {
+    if (this->hbi_read_(HBI_STATUS_REG, 1, &probe)) {
+      ESP_LOGI(TAG, "probe status[%d]=0x%04x", i, probe);
+    } else {
+      ESP_LOGE(TAG, "probe status[%d] read failed", i);
+    }
+  }
+  if (this->hbi_read_(HBI_KEY_RAW_REG, 1, &probe)) {
+    ESP_LOGI(TAG, "probe key_raw=0x%04x", probe);
+  }
+
   const uint16_t one = HBI_BOOT_ENABLE_WORD;
   if (!this->hbi_write_(HBI_BOOT_MODE_REG, 1, &one)) {
     ESP_LOGE(TAG, "boot_mode write failed (HBI dead)");
     return false;
   }
-  delay(300);
 
-  uint16_t boot_status = 0;
-  if (!this->hbi_read_(HBI_RESULT_REG, 1, &boot_status)) {
-    ESP_LOGE(TAG, "boot ready read failed");
-    return false;
+  // ---- 链路探针 2：boot enable 后轮询 RESULT，0xd3d3 出现时间与中间值全记录 ----
+  bool ready = false;
+  for (int i = 0; i < 10; ++i) {
+    delay(50);
+    if (!this->hbi_read_(HBI_RESULT_REG, 1, &this->boot_ready_)) {
+      ESP_LOGE(TAG, "probe result[%d] read failed", i);
+      return false;
+    }
+    ESP_LOGI(TAG, "probe result[%d] t=%dms = 0x%04x", i, (i + 1) * 50, this->boot_ready_);
+    if (this->boot_ready_ == HBI_BOOT_READY_WORD) {
+      ready = true;
+      break;
+    }
   }
-  this->boot_ready_ = boot_status;
-  if (boot_status != HBI_BOOT_READY_WORD) {
-    ESP_LOGE(TAG, "boot status unexpected: 0x%04x expected 0x%04x", boot_status, HBI_BOOT_READY_WORD);
+  if (!ready) {
+    ESP_LOGE(TAG, "boot ready never seen 0xd3d3 (last=0x%04x)", this->boot_ready_);
     return false;
   }
 
