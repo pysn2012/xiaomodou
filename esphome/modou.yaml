@@ -34,6 +34,7 @@ psram:
 
 logger:
   level: DEBUG
+  baud_rate: 115200   # UART0(GPIO1/3) 串口日志，参数与 mpy 时代一致
 
 api:
 
@@ -108,19 +109,26 @@ zl38063:
   data_rate: 10MHz
 
 # ---- 屏幕：ST7789 160x128，CUSTOM 模型重放原厂 18 条初始化序列 ----
-# rotation 对应原厂 MADCTL=0xA0（板上若旋转 180 度改 90°；整体偏移调 offset）
+# 几何定案（对齐 mpy 板测结论 MADCTL=0xA0）：transform swap_xy+mirror_y = MV|MY = 0xA0，
+# swap_xy 时 dimensions 填旋转后的最终画布 160x128（mipi_spi 官方文档语义）。
+# 若板测发现图像上下颠倒 → 加 mirror_x: true；左右镜像 → 改 mirror_x/mirror_y 组合；
+# 红蓝反色 → color_order 改 bgr。
 display:
   - platform: mipi_spi
     model: CUSTOM
     id: modou_lcd
-    dimensions: 160x128
+    dimensions:
+      width: 160
+      height: 128
+    transform:
+      swap_xy: true
+      mirror_y: true
     cs_pin: 27
     dc_pin: 21
     reset_pin: 22
     data_rate: 40MHz
     color_order: rgb
     invert_colors: false   # 0x21 已在 init_sequence 里，不再让驱动重复发
-    rotation: 270°
     update_interval: 1s
     init_sequence:
       - [0xC0, 0x00]
@@ -160,6 +168,12 @@ display:
       it.fill(bg);
       it.printf(it.get_width() / 2, it.get_height() / 2, id(font_status),
                 Color::WHITE, TextAlign::CENTER, "%s", text);
+      // ---- 启动诊断行（顶部）：IP + 组件状态，开机自检不用翻日志 ----
+      it.printf(0, 0, id(font_small), Color::WHITE, TextAlign::TOP_LEFT, "%s",
+                id(ip_addr).state.c_str());
+      if (id(dsp).is_failed())
+        it.printf(it.get_width(), 0, id(font_small), Color(255, 80, 80),
+                  TextAlign::TOP_RIGHT, "DSP FAIL");
 
 font:
   - file:
@@ -169,6 +183,20 @@ font:
     id: font_status
     size: 20
     glyphsets: GF_Latin_Kernel
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_small
+    size: 12
+    glyphsets: GF_Latin_Kernel
+
+# WiFi IP 上屏用（屏幕顶部诊断行）
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_addr
+      name: IP Address
 
 # ---- I2S 音频总线（BCK=5 WS=25；DSP 是 slave，ESP32 出时钟；mic/speaker 同总线分时复用）----
 i2s_audio:
