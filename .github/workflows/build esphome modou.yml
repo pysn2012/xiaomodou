@@ -1,8 +1,8 @@
 name: build esphome modou
 
 # 魔豆小车 ESPHome 语音助手固件在线编译
-# 配置：esphome/modou.yaml（自研 external component：components/aw9106 背光）
-# 密钥：esphome/secrets.yaml（个人仓库，WiFi 凭据直接入库；介意可改用 GitHub Secrets 注入）
+# 配置：esphome/modou.yaml（自研 external component：components/aw9106 背光 + components/zl38063 DSP）
+# 密钥：编译前用 GitHub Secrets（WIFI_SSID/WIFI_PASSWORD）动态生成 esphome/secrets.yaml
 # 版本：固定 2026.8.2，与本地 esphome CLI 校验版本一致，避免上游升级导致编译差异
 
 on:
@@ -22,6 +22,14 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v6
+
+      # 0) 动态生成 secrets.yaml（写入 esphome/ 目录，docker 会把该目录挂载为 /config）
+      - name: Generate secrets.yaml
+        run: |
+          cat > esphome/secrets.yaml <<EOF
+          wifi_ssid: "${{ secrets.WIFI_SSID }}"
+          wifi_password: "${{ secrets.WIFI_PASSWORD }}"
+          EOF
 
       # 1) 编译（esphome 官方镜像自带 esp-idf 工具链；配置目录挂载为 /config）
       #    external_components 的 source: components 相对 modou.yaml 所在目录解析，

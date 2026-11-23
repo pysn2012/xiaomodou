@@ -1,4 +1,6 @@
 # ESPHome 本地构建缓存与临时日志
-# （secrets.yaml 有意入库供 CI 编译使用，不在此忽略）
+# secrets.yaml 本地保留供 esphome config 校验用（WiFi 凭据），不入库；
+# CI 由工作流用 GitHub Secrets 动态生成
 .esphome/
 *.log
+secrets.yaml
