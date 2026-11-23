@@ -1,0 +1,4 @@
+# ESPHome 本地构建缓存与临时日志
+# （secrets.yaml 有意入库供 CI 编译使用，不在此忽略）
+.esphome/
+*.log
