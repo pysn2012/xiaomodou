@@ -172,14 +172,17 @@ bool Zl38063Component::check_result_zero_() {
 bool Zl38063Component::load_firmware_() {
   const uint16_t one = HBI_BOOT_ENABLE_WORD;
   if (!this->hbi_write_(HBI_BOOT_MODE_REG, 1, &one)) {
+    ESP_LOGE(TAG, "boot_mode write failed (HBI dead)");
     return false;
   }
   delay(300);
 
   uint16_t boot_status = 0;
   if (!this->hbi_read_(HBI_RESULT_REG, 1, &boot_status)) {
+    ESP_LOGE(TAG, "boot ready read failed");
     return false;
   }
+  this->boot_ready_ = boot_status;
   if (boot_status != HBI_BOOT_READY_WORD) {
     ESP_LOGE(TAG, "boot status unexpected: 0x%04x expected 0x%04x", boot_status, HBI_BOOT_READY_WORD);
     return false;
@@ -208,12 +211,15 @@ bool Zl38063Component::load_firmware_() {
     if (set_target_addr != 0) {
       const uint16_t target_words[2] = {(uint16_t) (target >> 16), (uint16_t) (target & 0xffffU)};
       if (!this->hbi_write_(HBI_TARGET_ADDR_REG, 2, target_words)) {
+        ESP_LOGE(TAG, "set target addr failed: block=%u target=0x%08lx", (unsigned) i, (unsigned long) target);
         return false;
       }
     }
 
     const uint16_t hbi_addr = (uint16_t) (0xff00U | (target & 0x00ffU));
     if (!this->hbi_write_(hbi_addr, (uint8_t) word_count, words)) {
+      ESP_LOGE(TAG, "firmware write failed: block=%u target=0x%08lx words=%u",
+               (unsigned) i, (unsigned long) target, (unsigned) word_count);
       return false;
     }
 
@@ -225,9 +231,11 @@ bool Zl38063Component::load_firmware_() {
   const uint16_t exec_words[2] = {(uint16_t) (modou_dsp_fw_exec_addr >> 16),
                                   (uint16_t) (modou_dsp_fw_exec_addr & 0xffffU)};
   if (!this->hbi_write_(HBI_EXEC_ADDR_REG, 2, exec_words)) {
+    ESP_LOGE(TAG, "exec addr write failed");
     return false;
   }
   if (!this->command_(0x000d)) {
+    ESP_LOGE(TAG, "cmd 0x000d (fw execute) failed");
     return false;
   }
   return this->check_result_zero_();
@@ -276,24 +284,6 @@ bool Zl38063Component::start_kick_() {
   return true;
 }
 
-bool Zl38063Component::full_boot_() {
-  bool ok = this->load_firmware_();
-  if (ok) {
-    ok = this->command_(0x0008);
-  }
-  if (ok) {
-    ok = this->load_config_();
-  }
-  if (ok) {
-    ok = this->apply_post_boot_();
-  }
-  if (ok) {
-    ok = this->start_kick_();
-  }
-  ESP_LOGI(TAG, "full boot done: %s", ok ? "OK" : "FAIL");
-  return ok;
-}
-
 void Zl38063Component::hw_reset_pulse_() {
   this->reset_pin_->setup();
   this->reset_pin_->digital_write(false);
@@ -302,26 +292,86 @@ void Zl38063Component::hw_reset_pulse_() {
   delay(500);
 }
 
-void Zl38063Component::setup() {
-  this->spi_setup();
+bool Zl38063Component::full_boot_() {
+  bool ok = this->load_firmware_();
+  if (!ok) {
+    this->boot_step_ = "load_firmware";
+    return false;
+  }
+  if (!this->command_(0x0008)) {
+    this->boot_step_ = "cmd 0x0008 (fw start)";
+    return false;
+  }
+  if (!this->load_config_()) {
+    this->boot_step_ = "load_config";
+    return false;
+  }
+  if (!this->apply_post_boot_()) {
+    this->boot_step_ = "post_boot registers";
+    return false;
+  }
+  if (!this->start_kick_()) {
+    this->boot_step_ = "start_kick";
+    return false;
+  }
+  this->boot_step_ = "OK";
+  ESP_LOGI(TAG, "full boot done: OK");
+  return true;
+}
+
+void Zl38063Component::attempt_boot_() {
+  this->attempt_count_++;
+  ESP_LOGI(TAG, "boot attempt #%u start", (unsigned) this->attempt_count_);
   this->hw_reset_pulse_();
 
+  // HBI 初始化字 + 状态探测：INIT 后 DSP 应回 STATUS_REG（读全 0/全 F 说明 HBI 链路有问题）
   delay(2);
   this->enable();
   this->write_word_(HBI_INIT_WORD);
   this->disable();
 
-  this->boot_ok_ = this->full_boot_();
-  if (!this->boot_ok_) {
-    ESP_LOGE(TAG, "ZL38063 boot failed - mic/speaker audio will not work");
-    this->mark_failed();
+  if (this->hbi_read_(HBI_STATUS_REG, 1, &this->init_status_)) {
+    ESP_LOGI(TAG, "after INIT: status=0x%04x", this->init_status_);
+  } else {
+    ESP_LOGE(TAG, "after INIT: status read failed (HBI dead)");
   }
+
+  this->boot_ok_ = this->full_boot_();
+  if (this->boot_ok_) {
+    ESP_LOGI(TAG, "ZL38063 boot attempt #%u OK", (unsigned) this->attempt_count_);
+  } else {
+    ESP_LOGE(TAG, "ZL38063 boot attempt #%u FAILED at step: %s (boot_ready=0x%04x init_status=0x%04x)",
+             (unsigned) this->attempt_count_, this->boot_step_, this->boot_ready_, this->init_status_);
+  }
+}
+
+void Zl38063Component::setup() {
+  this->spi_setup();
+  this->attempt_boot_();
+  // 失败不 mark_failed：保持组件存活，loop() 里 20 秒重试（日志实时可见）
+}
+
+void Zl38063Component::loop() {
+  if (this->boot_ok_) {
+    return;
+  }
+  const uint32_t now = millis();
+  if (this->last_attempt_ms_ != 0 && now - this->last_attempt_ms_ < 20000) {
+    return;
+  }
+  this->last_attempt_ms_ = now;
+  this->attempt_boot_();
 }
 
 void Zl38063Component::dump_config() {
   ESP_LOGCONFIG(TAG, "ZL38063 DSP (HBI over SPI)");
   LOG_SPI_DEVICE(this);
   ESP_LOGCONFIG(TAG, "  Boot: %s", this->boot_ok_ ? "OK" : "FAIL");
+  if (!this->boot_ok_) {
+    ESP_LOGCONFIG(TAG, "  Failed step: %s", this->boot_step_);
+    ESP_LOGCONFIG(TAG, "  boot_ready=0x%04x (expect 0xd3d3) init_status=0x%04x attempts=%u",
+                  this->boot_ready_, this->init_status_, (unsigned) this->attempt_count_);
+  }
 }
 
 }  // namespace zl38063

@@ -177,7 +177,7 @@ display:
       // ---- 启动诊断行（顶部）：IP + 组件状态，开机自检不用翻日志 ----
       it.printf(0, 0, id(font_small), Color::WHITE, TextAlign::TOP_LEFT, "%s",
                 id(ip_addr).state.c_str());
-      if (id(dsp).is_failed())
+      if (!id(dsp).is_boot_ok())
         it.printf(it.get_width(), 0, id(font_small), Color(255, 80, 80),
                   TextAlign::TOP_RIGHT, "DSP FAIL");
 
@@ -235,7 +235,7 @@ speaker:
 micro_wake_word:
   id: mww
   models:
-    - okay_nabu
+    - models/okay_nabu.json   # 本地模型（json+tflite 已入库，本地/CI 都不再联网下载）
   on_wake_word_detected:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;

@@ -29,6 +29,7 @@ class Zl38063Component : public Component,
                                                spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_10MHZ> {
  public:
   void setup() override;
+  void loop() override;
   void dump_config() override;
   float get_setup_priority() const override { return setup_priority::HARDWARE; }
 
@@ -38,6 +39,12 @@ class Zl38063Component : public Component,
  protected:
   GPIOPin *reset_pin_{nullptr};
   bool boot_ok_{false};
+  // 诊断状态：失败步骤名 + boot ready 探测值 + INIT 后状态寄存器值
+  const char *boot_step_{"not started"};
+  uint16_t boot_ready_{0};    // load_firmware 第一步 RESULT_REG 读值（期望 0xd3d3）
+  uint16_t init_status_{0};   // INIT 字后 STATUS_REG 读值
+  uint32_t last_attempt_ms_{0};
+  uint16_t attempt_count_{0};
 
   // ---- HBI 原语（16-bit 字，线上 big-endian）----
   void write_word_(uint16_t word);
@@ -47,6 +54,7 @@ class Zl38063Component : public Component,
   bool hbi_write_(uint16_t addr, uint8_t words, const uint16_t *in);
 
   // ---- 启动流程 ----
+  void attempt_boot_();  // 完整一次引导尝试（复位脉冲 + INIT + 固件/配置）
   bool wait_cmd_idle_();
   bool command_(uint16_t cmd);
   bool check_result_zero_();
