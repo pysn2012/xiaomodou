@@ -73,7 +73,7 @@ def run():
         inversion=True,  # 色序由原厂序列 0x36=0x00 (RGB) 指定，不传 color_order（此版固件无 MADCTL_RGB 常量）
     )
     tft.init()
-    print("[screen] st7789 init done (160x128, MADCTL=0xA0)")
+    print("[screen] v2 st7789 init done (160x128, Pin.OUT 已显式配置)")
 
     # 4) 测试图案：四色块 + 顶部彩条
     RED = st7789.color565(255, 0, 0)

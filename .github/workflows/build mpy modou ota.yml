@@ -15,7 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  MICROPYTHON_DIR: ${{ github.workspace }}/micropython
+  # 注意：不能叫 workspace/micropython——与本仓库的 micropython/ 配置目录撞名，
+  # git clone 会报"destination path already exists"（2026-11-23 实际踩坑）
+  MICROPYTHON_DIR: ${{ github.workspace }}/mpy-src
   ESP_IDF_DIR: ${{ github.workspace }}/esp-idf
   ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
   # MicroPython v1.29.0（不可行时退 v1.27.0，同时核对该版本的板级变体文件名）
@@ -43,7 +45,7 @@ jobs:
             ~/.espressif/
             ~/.cache/pip/
             ${{ env.MICROPYTHON_DIR }}
-          key: mpy-${{ env.MPY_VERSION }}-idf-${{ env.ESP_IDF_VERSION }}-modou-v2
+          key: mpy-${{ env.MPY_VERSION }}-idf-${{ env.ESP_IDF_VERSION }}-modou-v3
 
       # 3. 安装系统依赖（仅在缓存未命中时）
       - name: Install system dependencies

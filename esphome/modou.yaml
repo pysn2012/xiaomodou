@@ -108,8 +108,8 @@ display:
       - delay 50ms
     lambda: |-
       // v0.2 测试图案：四色块（对应 test_screen.py，直观判断方向/偏移）
-      it.fill(Color(0));
-      it.filled_rectangle(0, 0, 80, 64, Color(0xF800));   // 红
-      it.filled_rectangle(80, 0, 80, 64, Color(0x07E0));  // 绿
-      it.filled_rectangle(0, 64, 80, 64, Color(0x001F));  // 蓝
+      it.fill(Color::BLACK);
+      it.filled_rectangle(0, 0, 80, 64, Color(255, 0, 0));    // 红
+      it.filled_rectangle(80, 0, 80, 64, Color(0, 255, 0));   // 绿
+      it.filled_rectangle(0, 64, 80, 64, Color(0, 0, 255));   // 蓝
       it.filled_rectangle(80, 64, 80, 64, Color::WHITE);

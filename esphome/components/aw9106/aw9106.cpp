@@ -29,10 +29,9 @@ void Aw9106Component::factory_init_() {
 }
 
 void Aw9106Component::setup() {
-  // 探测设备：写一条无害指令（回到页 0），NACK 说明芯片不在
-  esp_err_t err = this->write_reg(0x7F, 0x00);
-  if (err != i2c::ERROR_OK) {
-    ESP_LOGE(TAG, "AW9106 not found on I2C bus (err=%d), LCD power/backlight unavailable", err);
+  // 探测设备：写一条无害指令（回到页 0），失败说明芯片不在
+  if (!this->write_reg(0x7F, 0x00)) {
+    ESP_LOGE(TAG, "AW9106 not found on I2C bus, LCD power/backlight unavailable");
     this->mark_failed();
     return;
   }

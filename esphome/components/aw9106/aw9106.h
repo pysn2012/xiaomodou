@@ -29,7 +29,8 @@ class Aw9106Component : public Component, public i2c::I2CDevice {
   void factory_init_();
 };
 
-class Aw9106Backlight : public switch::Switch, public Component {
+// 注意：ESPHome 的 switch 命名空间是 switch_（带下划线，switch 是 C++ 关键字）
+class Aw9106Backlight : public switch_::Switch, public Component {
  public:
   void set_parent(Aw9106Component *parent) { this->parent_ = parent; }
   void write_state(bool state) override;
