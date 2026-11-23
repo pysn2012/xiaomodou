@@ -122,6 +122,7 @@ display:
       height: 128
     transform:
       swap_xy: true
+      mirror_x: false    # transform 三键必填
       mirror_y: true
     cs_pin: 27
     dc_pin: 21
