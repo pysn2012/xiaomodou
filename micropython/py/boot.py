@@ -1,16 +1,15 @@
 # Modou 设备端 boot.py（拷到设备根目录，开机自动运行）
 # ------------------------------------------------------------------
 # 流程：
-#   1. WebREPL 密码初始化（webrepl_cfg.py 不存在时自动生成，密码见下方配置）
-#   2. 连接 Wi-Fi（STA 模式，SSID/PASSWORD 见下方配置）
-#   3. 启动 WebREPL（Thonny/浏览器 ws://<IP>:8266 在线编程）
-#   4. 回滚保护自检：OTA 升级后的新固件处于 pending_verify，
-#      能连上 Wi-Fi 说明固件基本可用，自动 ota.mark_valid() 固化；
-#      若连不上 Wi-Fi 就不确认，手动复位会回退旧固件（回滚保护生效）
+#   1. WebREPL 密码初始化（webrepl_cfg.py 不存在时自动生成）
+#   2. 连接 Wi-Fi（STA 模式，关闭省电——见 _connect_wifi 注释）
+#   3. OTA 回滚保护自检（新固件联网成功即自动固化）
+#   4. 启动 WebREPL（浏览器/Thonny ws://<IP>:8266）
 #
-# 注意：
-#   - boot.py 里 SSID/PASSWORD 改成你自己的
-#   - WebREPL 密码建议修改（WebREPL_PASSWORD），长度 4~9 字符
+# 使用约定：
+#   - 控车：WebREPL 连上后手动 `import car_web; car_web.start()`
+#   - 不放 main.py：UART0 顶针接底座后被占用，boot 流程不依赖业务代码
+#   - 开机时不要插充电线（充电状态会阻塞 WiFi/WebREPL，2026-11-22 板测实证）
 # ------------------------------------------------------------------
 
 import network
@@ -25,25 +24,28 @@ except ImportError:
     _HAS_OTA = False
 
 # ====== 配置部分 ======
-SSID = "shami"
-PASSWORD = "cnas2020"
+SSID = "SSID"
+PASSWORD = "PASSWORD"
 WEBREPL_PASSWORD = "1234"
 
 
 def _ensure_webrepl_cfg():
-    """webrepl_cfg.py 不存在时自动生成（WebREPL 密码配置文件）。"""
+    """webrepl_cfg.py 不存在时自动生成（webrepl 模块只识别变量名 PASS）。"""
     try:
         os.stat("webrepl_cfg.py")
-        return
     except OSError:
         with open("webrepl_cfg.py", "w") as f:
-            f.write('PASSWD = "%s"\n' % WEBREPL_PASSWORD)
-        print("[boot] webrepl_cfg.py created (password=%s)" % WEBREPL_PASSWORD)
+            f.write('PASS = "%s"\n' % WEBREPL_PASSWORD)
+        print("[boot] webrepl_cfg.py created")
 
 
 def _connect_wifi(timeout_s=20):
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
+    # 关闭 WiFi 省电：ESP32 端口 pm 取值 0/1/2（0=WIFI_PS_NONE）。
+    # 默认省电模式空闲后 modem sleep，WebREPL 会"TCP 握手成功但应用层无响应"。
+    # 注意不能用 ESP8266 的位掩码值（如 0xA11140，会报 Wifi Unknown Error 0x0102）。
+    wlan.config(pm=0)
     if not wlan.isconnected():
         print("[boot] connecting WiFi: %s ..." % SSID)
         wlan.connect(SSID, PASSWORD)
@@ -70,9 +72,8 @@ def _confirm_ota_if_pending():
         print("[boot] ota: slot=%s version=%s state=%s" % (info[0], info[2], state))
         if state == "pending_verify":
             ota.mark_valid()
-            print("[boot] OTA firmware confirmed (rollback protection released)")
+            print("[boot] OTA firmware confirmed")
     except Exception as e:
-        # 首烧无 ota_0/ota_1 或模块异常时不阻塞启动
         print("[boot] ota check skipped: %s" % e)
 
 
@@ -81,4 +82,8 @@ _wlan = _connect_wifi()
 if _wlan.isconnected():
     _confirm_ota_if_pending()
 webrepl.start()
-print("[boot] WebREPL started on ws://%s:8266" % _wlan.ifconfig()[0])
+if _wlan.isconnected():
+    print("[boot] ready: ws://%s:8266" % _wlan.ifconfig()[0])
+else:
+    print("[boot] ready (WiFi down, WebREPL listening anyway)")
+

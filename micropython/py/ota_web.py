@@ -22,8 +22,8 @@ import ota
 import machine
 
 # ====== 配置部分 ======
-SSID = "shami"
-PASSWORD = "cnas2020"
+SSID = "SSID"
+PASSWORD = "PASSWORD"
 PORT = 80
 # 更新槽 2.875MB，留余量
 MAX_PAYLOAD = 2800000
@@ -236,3 +236,5 @@ def run():
             except Exception:
                 pass
         conn.close()
+
+run()

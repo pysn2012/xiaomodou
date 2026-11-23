@@ -54,22 +54,23 @@ def run():
     aw9106.backlight(True)
     print("[screen] AW9106 power enabled, backlight on")
 
-    # 2) SPI2 总线（与 DSP HBI 共享；40MHz）
-    spi = SPI(2, baudrate=40_000_000, polarity=0, phase=0,
+    # 2) SPI2 总线（与 DSP HBI 共享；GPIO 矩阵路由上限 26.67MHz）
+    spi = SPI(2, baudrate=26_666_666, polarity=0, phase=0,
               sck=Pin(32), mosi=Pin(33))
 
     # 3) st7789 + 原厂初始化序列；rotation=3 -> MADCTL 0xA0，160x128
+    #    注意：reset/dc/cs 必须显式 Pin.OUT——默认输入模式下 value() 不开输出驱动，
+    #    复位线被板上下拉拉死（实测 GPIO22 读回 0），屏永远处于复位态全黑。
     tft = st7789.ST7789(
         spi,
         128,
         160,
-        reset=Pin(22),
-        dc=Pin(21),
-        cs=Pin(27),
+        reset=Pin(22, Pin.OUT),
+        dc=Pin(21, Pin.OUT),
+        cs=Pin(27, Pin.OUT),
         rotation=3,
         custom_init=FACTORY_INIT,
-        color_order=st7789.MADCTL_RGB,
-        inversion=True,
+        inversion=True,  # 色序由原厂序列 0x36=0x00 (RGB) 指定，不传 color_order（此版固件无 MADCTL_RGB 常量）
     )
     tft.init()
     print("[screen] st7789 init done (160x128, MADCTL=0xA0)")

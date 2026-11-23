@@ -13,7 +13,7 @@
 #   - 48kHz/16bit/立体声，Philips 标准格式（参数来自 modou_audio_capture.c）
 
 import time
-from machine import Pin, I2C
+from machine import Pin, I2C, I2S
 
 import aw9106
 import dsp
@@ -38,15 +38,16 @@ def boot_dsp():
 def record(seconds=RECORD_SECONDS):
     n = RATE * CH * (BITS // 8) * seconds
     buf = bytearray(n)
+    # ESP32 端口 I2S 签名：mode 必须关键字传参，数据脚统一叫 sd（无 sdin/sdout），采样率参数名是 rate
     i2s = I2S(
         0,
-        I2S.RX,
+        mode=I2S.RX,
         sck=Pin(5),
         ws=Pin(25),
-        sdin=Pin(35),
+        sd=Pin(35),
         bits=BITS,
         format=I2S.STEREO,
-        samplerate=RATE,
+        rate=RATE,
         ibuf=20480,
     )
     aw9106.rgb(0, 255, 0)
@@ -61,13 +62,13 @@ def record(seconds=RECORD_SECONDS):
 def play(buf):
     i2s = I2S(
         0,
-        I2S.TX,
+        mode=I2S.TX,
         sck=Pin(5),
         ws=Pin(25),
-        sdout=Pin(26),
+        sd=Pin(26),
         bits=BITS,
         format=I2S.STEREO,
-        samplerate=RATE,
+        rate=RATE,
         ibuf=20480,
     )
     aw9106.rgb(255, 0, 0)  # 红灯=播放中

@@ -5,6 +5,9 @@
 # LCD 电源/背光：0x23/0x24（0x80 开 / 0x00 关），不要动 0x20/0x21/0x22
 #
 # 重要：aw9106.init() 必须在屏幕 SPI 初始化和 dsp.init() 之前调用！
+#       init() 完成后屏幕保持熄灭（原厂序列末尾会点亮背光，这里统一关掉），
+#       要亮屏必须显式调 backlight(True)（test_screen.py 已这样做；
+#       audio_test 等不用屏的场景因此不会被误点亮）。
 
 import time
 from machine import Pin, SoftI2C
@@ -31,7 +34,8 @@ def _write(reg, value):
 
 
 def init(i2c=None):
-    """探测 AW9106 并重放原厂上电序列。必须最先调用。"""
+    """探测 AW9106 并重放原厂上电序列。必须最先调用。
+    完成后屏幕保持熄灭；要亮屏显式调 backlight(True)。"""
     global _i2c, _present
     _i2c = i2c if i2c is not None else SoftI2C(sda=Pin(SDA), scl=Pin(SCL), freq=100000)
     _present = ADDR in _i2c.scan()
@@ -40,6 +44,10 @@ def init(i2c=None):
     for i, (reg, value) in enumerate(_FACTORY_INIT):
         _write(reg, value)
         time.sleep_ms(5 if i == 0 else 1)
+    # 原厂序列末尾把 LCD 电源/背光打开（0x23/0x24=0x80）——audio_test 等
+    # 不用屏的场景会被误点亮，这里统一熄灭，亮屏权交给 backlight(True)。
+    _write(0x23, 0x00)
+    _write(0x24, 0x00)
     return True
 
 
