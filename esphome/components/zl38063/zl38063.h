@@ -22,7 +22,11 @@ namespace zl38063 {
 //     AW9106（HARDWARE，声明在 yaml 前面）必须先跑——LCD/DSP 电源挂在它上面
 //   - boot 时序来自原厂逆向，逐行对应 modou_dsp.c，勿改数值
 
-class Zl38063Component : public Component, public spi::SPIDevice {
+// 继承写法照抄官方 adc128s102：SPIDevice 在 2026.8.2 是四参数模板（BIT_ORDER/POLARITY/PHASE/DATA_RATE），
+// MODE0 = 极性低 + 相位前沿，MSB 先行，10MHz 与 yaml data_rate 一致
+class Zl38063Component : public Component,
+                         public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW,
+                                               spi::CLOCK_PHASE_LEADING, spi::DATA_RATE_10MHZ> {
  public:
   void setup() override;
   void dump_config() override;

@@ -4,6 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+// 块大小（原版 dsp_firmware.h 第 11 行定义，转换时曾遗漏导致 CI 编译失败）
+#define MODOU_DSP_FW_BLOCK_SIZE 0x2c
+
 const size_t modou_dsp_fw_block_count = 3699;
 const uint32_t modou_dsp_fw_program_base = 0x00080200;
 const uint32_t modou_dsp_fw_exec_addr = 0x00083040;
