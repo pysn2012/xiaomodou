@@ -112,6 +112,9 @@ zl38063:
     ignore_strapping_warning: true
   reset_pin: 19
   data_rate: 10MHz
+  # 0x19 按键前端（ID 0x11）：原厂在 DSP 复位前初始化，勿删
+  i2c_id: i2c_bus
+  address: 0x19
 
 # ---- 屏幕：ST7789 160x128，CUSTOM 模型重放原厂 18 条初始化序列 ----
 # 几何定案（对齐 mpy 板测结论 MADCTL=0xA0）：transform swap_xy+mirror_y = MV|MY = 0xA0，

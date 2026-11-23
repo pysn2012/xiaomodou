@@ -1,5 +1,6 @@
 #include "zl38063.h"
 #include "esphome/core/log.h"
+#include "driver/gpio.h"
 
 namespace esphome {
 namespace zl38063 {
@@ -48,12 +49,19 @@ static uint32_t rd_le32(const uint8_t *p) {
 // CS 由 SPIDevice 的 enable()/disable() 在每次事务前后拉低/拉高，与 IDF 版逐事务 CS 一致
 
 void Zl38063Component::write_word_(uint16_t word) {
+  if (this->use_raw_) {
+    this->raw_write_word_(word);
+    return;
+  }
   const uint16_t wire = hbi_swap16(word);
   const uint8_t buf[2] = {(uint8_t) (wire & 0xff), (uint8_t) (wire >> 8)};
   this->write_array(buf, 2);
 }
 
 uint16_t Zl38063Component::read_word_(bool *ok) {
+  if (this->use_raw_) {
+    return this->raw_read_word_(ok);
+  }
   // 读事务：发 dummy 0x0bad 的线上字节序，同时收 16-bit
   const uint16_t wire = hbi_swap16(HBI_READ_DUMMY_WORD);
   uint8_t buf[2] = {(uint8_t) (wire & 0xff), (uint8_t) (wire >> 8)};
@@ -339,10 +347,101 @@ bool Zl38063Component::full_boot_() {
   return true;
 }
 
+// ---- 原厂复刻 ----
+// 0x19 按键前端：原厂在 DSP 复位脉冲之前初始化（modou_dsp_keys.c factory_frontend_init 逐行移植）
+void Zl38063Component::frontend_init_() {
+  uint8_t id = 0;
+  if (!this->read_byte(0x0f, &id)) {
+    ESP_LOGW(TAG, "0x19 frontend not detected on I2C");
+    return;
+  }
+  if (id != 0x11) {
+    ESP_LOGW(TAG, "0x19 id reg 0x0f=0x%02x (expect 0x11)", id);
+    return;
+  }
+  static const uint8_t init_seq[][2] = {
+      {0x20, 0x00}, {0x21, 0x91}, {0x22, 0x40}, {0x23, 0x88},
+      {0x25, 0x40}, {0x30, 0x2a}, {0x32, 0x65}, {0x20, 0x41},
+  };
+  for (size_t i = 0; i < sizeof(init_seq) / sizeof(init_seq[0]); ++i) {
+    const uint8_t value = init_seq[i][1];
+    if (!this->write_register(init_seq[i][0], &value, 1)) {
+      ESP_LOGE(TAG, "0x19 frontend write failed: reg=0x%02x", init_seq[i][0]);
+      return;
+    }
+    delay(1);
+  }
+  ESP_LOGI(TAG, "0x19 frontend init OK (factory replica)");
+}
+
+bool Zl38063Component::init_raw_spi_() {
+  if (this->raw_spi_ != nullptr) {
+    return true;
+  }
+  // 与原厂/mpy 完全一致：硬件 CS=GPIO0、mode 0、10MHz、queue 6
+  spi_device_interface_config_t dev_cfg = {};
+  dev_cfg.clock_speed_hz = 10 * 1000 * 1000;
+  dev_cfg.mode = 0;
+  dev_cfg.spics_io_num = 0;  // GPIO0 硬件 CS
+  dev_cfg.queue_size = 6;
+  const esp_err_t err = spi_bus_add_device(SPI2_HOST, &dev_cfg, &this->raw_spi_);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "raw spi_bus_add_device failed: 0x%x", err);
+    this->raw_spi_ = nullptr;
+    return false;
+  }
+  return true;
+}
+
+void Zl38063Component::raw_write_word_(uint16_t word) {
+  const uint16_t wire = hbi_swap16(word);
+  spi_transaction_t trans = {};
+  trans.flags = SPI_TRANS_USE_TXDATA;
+  trans.length = 16;
+  memcpy(trans.tx_data, &wire, sizeof(wire));
+  spi_device_transmit(this->raw_spi_, &trans);
+}
+
+uint16_t Zl38063Component::raw_read_word_(bool *ok) {
+  uint16_t wire = hbi_swap16(HBI_READ_DUMMY_WORD);
+  spi_transaction_t trans = {};
+  trans.flags = SPI_TRANS_USE_TXDATA | SPI_TRANS_USE_RXDATA;
+  trans.length = 16;
+  trans.rxlength = 16;
+  memcpy(trans.tx_data, &wire, sizeof(wire));
+  const esp_err_t err = spi_device_transmit(this->raw_spi_, &trans);
+  if (ok != nullptr) {
+    *ok = (err == ESP_OK);
+  }
+  if (err != ESP_OK) {
+    return 0;
+  }
+  memcpy(&wire, trans.rx_data, sizeof(wire));
+  return hbi_swap16(wire);
+}
+
 void Zl38063Component::attempt_boot_() {
   this->attempt_count_++;
-  ESP_LOGI(TAG, "boot attempt #%u start", (unsigned) this->attempt_count_);
+  // 策略阶梯：尝试 1-2 用 ESPHome SPI 设备（GPIO CS）10MHz/1MHz；
+  // 尝试 3+ 切原厂复刻（IDF 裸设备，硬件 CS，10MHz，与 mpy 时代事务模式一致）
+  if (this->attempt_count_ >= 3) {
+    if (this->init_raw_spi_() && !this->use_raw_) {
+      this->use_raw_ = true;
+      ESP_LOGW(TAG, "switch to factory-replica HBI path (IDF raw device, hw CS@10MHz)");
+    }
+    ESP_LOGI(TAG, "boot attempt #%u start (path=raw-IDF hwCS)", (unsigned) this->attempt_count_);
+  } else {
+    const uint32_t hz = (this->attempt_count_ == 1) ? 10000000U : 1000000U;
+    this->set_data_rate(hz);
+    ESP_LOGI(TAG, "boot attempt #%u start (path=esphome gpioCS@%s)", (unsigned) this->attempt_count_,
+             hz == 1000000U ? "1MHz" : "10MHz");
+  }
   this->hw_reset_pulse_();
+
+  // 焊盘电平快照（只读寄存器，不重配引脚）：rst19 应为 1，cs0 应为 1（空闲），
+  // miso34 悬空通常读 0，key38 有外部上拉应为 1
+  ESP_LOGI(TAG, "pad levels: rst19=%d cs0=%d miso34=%d key38=%d", gpio_get_level(GPIO_NUM_19),
+           gpio_get_level(GPIO_NUM_0), gpio_get_level(GPIO_NUM_34), gpio_get_level(GPIO_NUM_38));
 
   // HBI 初始化字 + 状态探测：INIT 后 DSP 应回 STATUS_REG（读全 0/全 F 说明 HBI 链路有问题）
   delay(2);
@@ -367,6 +466,8 @@ void Zl38063Component::attempt_boot_() {
 
 void Zl38063Component::setup() {
   this->spi_setup();
+  // 原厂顺序：0x19 前端初始化在 DSP 复位脉冲之前（仅一次，与 factory 一致）
+  this->frontend_init_();
   this->attempt_boot_();
   // 失败不 mark_failed：保持组件存活，loop() 里 20 秒重试（日志实时可见）
 }
