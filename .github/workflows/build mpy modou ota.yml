@@ -1,0 +1,156 @@
+name: build mpy modou ota
+
+# Modou（魔豆小车，ESP32-D0WD + 16MB Flash + 8MB PSRAM）MicroPython OTA 固件编译
+# 配方来源（已验证配方，勿随意改动结构）：
+#   - 骨架照搬 build mpy stamp-p4 ota.yml（ota C 模块 + 乒乓分区表 + 回滚保护）
+#   - 差分升级不需要，modules/ota 已剥离 esp_delta_ota（stamp-p4/ota_mod 保持完整版不变）
+#   - st7789 / ota / dsp 全部位于本仓库 micropython/modules/，经 user_modules.cmake 注入，无需 clone russhughes
+# 注意：改了本工作流配置时必须升级缓存 key 后缀（-modou-vN）
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MICROPYTHON_DIR: ${{ github.workspace }}/micropython
+  ESP_IDF_DIR: ${{ github.workspace }}/esp-idf
+  ARTIFACTS_DIR: ${{ github.workspace }}/artifacts
+  # MicroPython v1.29.0（不可行时退 v1.27.0，同时核对该版本的板级变体文件名）
+  MPY_VERSION: v1.29.0
+  ESP_IDF_VERSION: v5.5.4
+  # 固件版本号：编译宏注入 ota 模块（ota.info() 可读，用于 OTA 新旧区分）
+  OTA_VERSION: v1.29.0-modou-${{ github.sha }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 1. 检出当前仓库（含 micropython/ 板目录 + C 模块 + esphome/ 配置）
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      # 2. 缓存（独立 key，与其他工作流互不干扰）
+      - name: Cache ESP-IDF and MicroPython
+        id: cache_all
+        uses: actions/cache@v6
+        with:
+          path: |
+            ${{ env.ESP_IDF_DIR }}
+            ~/.espressif/
+            ~/.cache/pip/
+            ${{ env.MICROPYTHON_DIR }}
+          key: mpy-${{ env.MPY_VERSION }}-idf-${{ env.ESP_IDF_VERSION }}-modou-v2
+
+      # 3. 安装系统依赖（仅在缓存未命中时）
+      - name: Install system dependencies
+        if: steps.cache_all.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git wget flex bison gperf python3 python3-pip python3-venv \
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0 patch
+
+      # 4. 克隆 MicroPython（仅在缓存未命中时）
+      - name: Clone MicroPython
+        if: steps.cache_all.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.MPY_VERSION }} \
+            https://github.com/micropython/micropython.git ${{ env.MICROPYTHON_DIR }}
+          cd ${{ env.MICROPYTHON_DIR }}
+          git submodule update --init --depth 1
+          make -C mpy-cross
+
+      # 5. 克隆并配置 ESP-IDF（仅在缓存未命中时，目标只装经典 esp32）
+      - name: Clone & setup ESP-IDF
+        if: steps.cache_all.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch ${{ env.ESP_IDF_VERSION }} \
+            https://github.com/espressif/esp-idf.git ${{ env.ESP_IDF_DIR }}
+          git -C ${{ env.ESP_IDF_DIR }} submodule update --init --recursive --filter=tree:0
+          ${{ env.ESP_IDF_DIR }}/install.sh esp32
+
+      # 6. 导入板目录 + OTA 差异项（分区表 / 版本号）
+      - name: Install Modou board & OTA config
+        run: |
+          # 1) 自研板目录（mpconfigboard.* + sdkconfig.modou）
+          cp -r ${{ github.workspace }}/micropython/board \
+            ${{ env.MICROPYTHON_DIR }}/ports/esp32/boards/MODOU
+          # 2) 自定义 OTA 乒乓分区表（Kconfig 的 CUSTOM_FILENAME 相对项目目录解析）
+          cp ${{ github.workspace }}/micropython/partitions-16mb-ota.csv \
+            ${{ env.MICROPYTHON_DIR }}/ports/esp32/partitions-16mb-ota.csv
+          # 3) 固件版本号：IDF 从项目目录 version.txt 读取，commit 短哈希保证每版唯一
+          printf 'v1.29.0-modou-%s' "${GITHUB_SHA:0:7}" \
+            > ${{ env.MICROPYTHON_DIR }}/ports/esp32/version.txt
+          # 清除缓存的构建目录、sdkconfig 与组件锁（防止旧版工作流的 managed_components 残留）
+          rm -rf ${{ env.MICROPYTHON_DIR }}/ports/esp32/build-*
+          rm -rf ${{ env.MICROPYTHON_DIR }}/ports/esp32/managed_components
+          rm -f  ${{ env.MICROPYTHON_DIR }}/ports/esp32/sdkconfig*
+          rm -f  ${{ env.MICROPYTHON_DIR }}/ports/esp32/dependencies.lock
+          echo "---- 板目录核对 ----"
+          ls ${{ env.MICROPYTHON_DIR }}/ports/esp32/boards/MODOU
+
+      # 7. 编译固件（公共模块 st7789/ota + modou 专属 dsp 经 USER_C_MODULES 注入）
+      #    16MB Flash 与 PSRAM 由板目录 sdkconfig.modou / sdkconfig.spiram_esp32 控制
+      - name: Build firmware
+        run: |
+          source ${{ env.ESP_IDF_DIR }}/export.sh
+          cd ${{ env.MICROPYTHON_DIR }}/ports/esp32
+          make BOARD=MODOU \
+            USER_C_MODULES=${{ github.workspace }}/micropython/user_modules.cmake \
+            -j$(nproc)
+
+      # 8. 自检：分区表必须真实包含 ota_0/ota_1/otadata/vfs，ota 与 st7789 模块已编入
+      - name: Verify build config
+        run: |
+          B="${{ env.MICROPYTHON_DIR }}/ports/esp32/build-MODOU"
+          echo "---- 分区表自检 ----"
+          PT=$(python3 ${{ env.ESP_IDF_DIR }}/components/partition_table/gen_esp32part.py \
+            "$B/partition_table/partition-table.bin")
+          echo "$PT"
+          if echo "$PT" | grep -q "ota_0" && echo "$PT" | grep -q "ota_1" \
+            && echo "$PT" | grep -q "otadata" && echo "$PT" | grep -q "vfs"; then
+            echo "OTA partition check: OK"
+          else
+            echo "OTA partitions missing!"
+            exit 1
+          fi
+          echo "---- 回滚保护自检 ----"
+          grep -q "CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y" "$B/sdkconfig" \
+            && echo "rollback enable: OK" || { echo "rollback not enabled!"; exit 1; }
+          grep -q "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y" "$B/sdkconfig" \
+            && echo "flash 16MB: OK" || { echo "flash size wrong!"; exit 1; }
+          grep -q "CONFIG_SPIRAM=y" "$B/sdkconfig" \
+            && echo "psram enable: OK" || { echo "psram not enabled!"; exit 1; }
+          echo "---- 模块符号自检 ----"
+          strings "$B/micropython.elf" | grep -m1 "ota_write" \
+            && echo "ota module linked: OK" || { echo "ota module missing"; exit 1; }
+          strings "$B/micropython.elf" | grep -m1 "mark_invalid_reboot" \
+            && echo "ota rollback funcs linked: OK" || { echo "ota rollback funcs missing"; exit 1; }
+          strings "$B/micropython.elf" | grep -m1 "ST7789" \
+            && echo "st7789 module linked: OK" || { echo "st7789 module missing"; exit 1; }
+          strings "$B/micropython.elf" | grep -m1 "HBI init word" \
+            && echo "dsp module linked: OK" || { echo "dsp module missing"; exit 1; }
+
+      # 9. 收集固件（只打包 bin：firmware.bin=合并镜像首烧用；micropython.bin=OTA 升级载荷；
+      #    bootloader.bin + partition-table.bin 分区烧录备用。elf/map/txt 为调试工具，不打进产物）
+      - name: Rename firmware
+        run: |
+          mkdir -p ${{ env.ARTIFACTS_DIR }}
+          B="${{ env.MICROPYTHON_DIR }}/ports/esp32/build-MODOU"
+          OUT="mpy_1.29_MODOU_OTA_16MB"
+          cp "$B/firmware.bin" "${{ env.ARTIFACTS_DIR }}/${OUT}_firmware.bin"
+          cp "$B/micropython.bin" "${{ env.ARTIFACTS_DIR }}/${OUT}_micropython.bin"
+          cp "$B/bootloader/bootloader.bin" "${{ env.ARTIFACTS_DIR }}/${OUT}_bootloader.bin"
+          cp "$B/partition_table/partition-table.bin" "${{ env.ARTIFACTS_DIR }}/${OUT}_partition-table.bin"
+          ls -la ${{ env.ARTIFACTS_DIR }}
+
+      # 10. 上传构建产物
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: mpy-modou-ota
+          path: ${{ env.ARTIFACTS_DIR }}/*

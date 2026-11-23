@@ -1,0 +1,53 @@
+name: build esphome modou
+
+# 魔豆小车 ESPHome 语音助手固件在线编译
+# 配置：esphome/modou.yaml（自研 external component：components/aw9106 背光）
+# 密钥：esphome/secrets.yaml（个人仓库，WiFi 凭据直接入库；介意可改用 GitHub Secrets 注入）
+# 版本：固定 2026.8.2，与本地 esphome CLI 校验版本一致，避免上游升级导致编译差异
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ESPHOME_VERSION: "2026.8.2"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      # 1) 编译（esphome 官方镜像自带 esp-idf 工具链；配置目录挂载为 /config）
+      #    external_components 的 source: components 相对 modou.yaml 所在目录解析，
+      #    仓库内 esphome/components/aw9106 会被自动发现，无需额外拷贝
+      - name: Build ESPHome firmware
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}/esphome:/config" \
+            ghcr.io/esphome/esphome:${{ env.ESPHOME_VERSION }} \
+            compile /config/modou.yaml
+
+      # 2) 收集产物：*.factory.bin = 合并镜像（bootloader+分区表+app），USB 首烧用；
+      #    firmware.bin = OTA 升级载荷（ESPHome 网页升级 / esphome run 直接用）
+      - name: Collect firmware
+        run: |
+          mkdir -p artifacts
+          B="esphome/.esphome/build/modou-box"
+          ls -la "$B"
+          cp "$B"/firmware.factory.bin artifacts/esphome_modou_factory.bin 2>/dev/null || true
+          cp "$B"/firmware.bin artifacts/esphome_modou_app.bin 2>/dev/null || true
+          test -f artifacts/esphome_modou_factory.bin || test -f artifacts/esphome_modou_app.bin \
+            || { echo "no firmware output found!"; exit 1; }
+          ls -la artifacts
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: esphome-modou
+          path: artifacts/*

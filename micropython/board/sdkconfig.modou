@@ -1,0 +1,11 @@
+# Modou 专属配置（最后加载，覆盖前面的默认值）
+# 16MB Flash + 自定义双 OTA 乒乓分区表 + OTA 回滚保护
+
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-16mb-ota.csv"
+
+# 回滚保护：OTA 后新固件处于 pending_verify，需 ota.mark_valid() 确认；
+# 确认前复位则 bootloader 自动回退旧分区
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
