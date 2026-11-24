@@ -1,6 +1,7 @@
 #include "zl38063.h"
 #include "esphome/core/log.h"
 #include "driver/gpio.h"
+#include "soc/gpio_struct.h"  // GPIO.out 寄存器直读（pad 快照），防传递包含缺失
 
 namespace esphome {
 namespace zl38063 {
@@ -45,8 +46,14 @@ static uint32_t rd_le32(const uint8_t *p) {
 }
 
 // ---- HBI 原语 ----
-// 线上字节序：每个 16-bit 字按 big-endian 发送（等价 IDF 版 memcpy(swap16(wire)) 的事务），
-// CS 由 SPIDevice 的 enable()/disable() 在每次事务前后拉低/拉高，与 IDF 版逐事务 CS 一致
+// 线上字节序：每个 16-bit 字按 big-endian 发送（等价 IDF 版 memcpy(swap16(wire)) 的事务）
+//
+// ⚠️ CS 断言必须逐字包裹（2026-11-24 板测根因）：
+//   ESPHome IDF 后端注册设备时 spics_io_num=-1（spi_esp_idf.cpp L196），IDF 驱动不管 CS；
+//   CS 由 begin_transaction()/end_transaction()（enable/disable）用 GPIO 软件拉低/拉高。
+//   write_array/transfer_array 单独调用 = CS 不断言的事务 → HBI 不解析 → MISO 全 0。
+//   官方组件模式 = enable(); write; disable(); 显式包裹每个事务。
+//   raw 路径（IDF 硬件 CS）则由 spics_io_num 每事务自动断言，无需包裹。
 
 void Zl38063Component::write_word_(uint16_t word) {
   if (this->use_raw_) {
@@ -55,17 +62,21 @@ void Zl38063Component::write_word_(uint16_t word) {
   }
   const uint16_t wire = hbi_swap16(word);
   const uint8_t buf[2] = {(uint8_t) (wire & 0xff), (uint8_t) (wire >> 8)};
+  this->enable();
   this->write_array(buf, 2);
+  this->disable();
 }
 
 uint16_t Zl38063Component::read_word_(bool *ok) {
   if (this->use_raw_) {
     return this->raw_read_word_(ok);
   }
-  // 读事务：发 dummy 0x0bad 的线上字节序，同时收 16-bit
+  // 读事务：发 dummy 0x0bad 的线上字节序，同时收 16-bit（CS 逐字包裹，见上）
   const uint16_t wire = hbi_swap16(HBI_READ_DUMMY_WORD);
   uint8_t buf[2] = {(uint8_t) (wire & 0xff), (uint8_t) (wire >> 8)};
+  this->enable();
   this->transfer_array(buf, 2);
+  this->disable();
   if (ok != nullptr) {
     *ok = true;
   }
@@ -351,7 +362,9 @@ bool Zl38063Component::full_boot_() {
 // 0x19 按键前端：原厂在 DSP 复位脉冲之前初始化（modou_dsp_keys.c factory_frontend_init 逐行移植）
 void Zl38063Component::frontend_init_() {
   uint8_t id = 0;
-  if (!this->read_byte(0x0f, &id)) {
+  // read_byte 在两个基类（spi::SPIDevice 的无参 SPI 读 / i2c::I2CDevice 的寄存器读）同名，
+  // 必须显式限定 i2c 版本，否则跨基类名字查找歧义（CI 编译报 ambiguous）
+  if (!this->i2c::I2CDevice::read_byte(0x0f, &id)) {
     ESP_LOGW(TAG, "0x19 frontend not detected on I2C");
     return;
   }
@@ -399,7 +412,10 @@ void Zl38063Component::raw_write_word_(uint16_t word) {
   trans.flags = SPI_TRANS_USE_TXDATA;
   trans.length = 16;
   memcpy(trans.tx_data, &wire, sizeof(wire));
-  spi_device_transmit(this->raw_spi_, &trans);
+  const esp_err_t err = spi_device_transmit(this->raw_spi_, &trans);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "raw spi transmit failed: 0x%x", err);
+  }
 }
 
 uint16_t Zl38063Component::raw_read_word_(bool *ok) {
@@ -422,32 +438,39 @@ uint16_t Zl38063Component::raw_read_word_(bool *ok) {
 
 void Zl38063Component::attempt_boot_() {
   this->attempt_count_++;
-  // 策略阶梯：尝试 1-2 用 ESPHome SPI 设备（GPIO CS）10MHz/1MHz；
-  // 尝试 3+ 切原厂复刻（IDF 裸设备，硬件 CS，10MHz，与 mpy 时代事务模式一致）
-  if (this->attempt_count_ >= 3) {
-    if (this->init_raw_spi_() && !this->use_raw_) {
-      this->use_raw_ = true;
-      ESP_LOGW(TAG, "switch to factory-replica HBI path (IDF raw device, hw CS@10MHz)");
+  // 策略阶梯：尝试 1 用 ESPHome SPI 设备（GPIO CS@10MHz，CS 逐字包裹后理论即通）；
+  // 尝试 2+ 切原厂复刻（IDF 裸设备，硬件 CS，10MHz，与 mpy 时代事务模式一致）
+  // （不再尝试 1MHz：IDF device 的 clock 在 spi_bus_add_device 时定死，
+  //   set_data_rate 不会作用于已注册的 delegate，降频尝试是空转）
+  if (this->attempt_count_ >= 2) {
+    if (this->init_raw_spi_()) {
+      if (!this->use_raw_) {
+        this->use_raw_ = true;
+        ESP_LOGW(TAG, "switch to factory-replica HBI path (IDF raw device, hw CS@10MHz)");
+      }
+      ESP_LOGI(TAG, "boot attempt #%u start (path=raw-IDF hwCS@10MHz)", (unsigned) this->attempt_count_);
+    } else {
+      ESP_LOGI(TAG, "boot attempt #%u start (path=esphome gpioCS@10MHz, raw unavailable)",
+               (unsigned) this->attempt_count_);
     }
-    ESP_LOGI(TAG, "boot attempt #%u start (path=raw-IDF hwCS)", (unsigned) this->attempt_count_);
   } else {
-    const uint32_t hz = (this->attempt_count_ == 1) ? 10000000U : 1000000U;
-    this->set_data_rate(hz);
-    ESP_LOGI(TAG, "boot attempt #%u start (path=esphome gpioCS@%s)", (unsigned) this->attempt_count_,
-             hz == 1000000U ? "1MHz" : "10MHz");
+    ESP_LOGI(TAG, "boot attempt #%u start (path=esphome gpioCS@10MHz)", (unsigned) this->attempt_count_);
   }
   this->hw_reset_pulse_();
 
-  // 焊盘电平快照（只读寄存器，不重配引脚）：rst19 应为 1，cs0 应为 1（空闲），
-  // miso34 悬空通常读 0，key38 有外部上拉应为 1
-  ESP_LOGI(TAG, "pad levels: rst19=%d cs0=%d miso34=%d key38=%d", gpio_get_level(GPIO_NUM_19),
-           gpio_get_level(GPIO_NUM_0), gpio_get_level(GPIO_NUM_34), gpio_get_level(GPIO_NUM_38));
+  // 焊盘电平快照：rst19 应为 1，cs0 应为 1（空闲），miso34 悬空通常读 0，key38 有外部上拉应为 1
+  // 注意：rst19/cs0 是输出配置（未开输入使能），gpio_get_level 读输入寄存器恒 0，
+  // 必须读 GPIO 输出寄存器（GPIO.out 覆盖 GPIO0~31）；miso34/key38 是输入脚用 gpio_get_level
+  const int rst19_lvl = (int) ((GPIO.out >> 19) & 1U);
+  const int cs0_lvl = (int) ((GPIO.out >> 0) & 1U);
+  ESP_LOGI(TAG, "pad levels: rst19=%d cs0=%d miso34=%d key38=%d", rst19_lvl, cs0_lvl,
+           gpio_get_level(GPIO_NUM_34), gpio_get_level(GPIO_NUM_38));
 
   // HBI 初始化字 + 状态探测：INIT 后 DSP 应回 STATUS_REG（读全 0/全 F 说明 HBI 链路有问题）
+  // 注意：write_word_ 内部已按路径包 CS（esphome GPIO 包裹 / raw 硬件 CS），
+  // 勿再手动 enable/disable——spi_device_acquire_bus 不可重入，嵌套会挂死
   delay(2);
-  this->enable();
   this->write_word_(HBI_INIT_WORD);
-  this->disable();
 
   if (this->hbi_read_(HBI_STATUS_REG, 1, &this->init_status_)) {
     ESP_LOGI(TAG, "after INIT: status=0x%04x", this->init_status_);
