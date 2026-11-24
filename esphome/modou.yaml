@@ -243,11 +243,23 @@ micro_wake_word:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
 
+# ---- 媒体播放器（官方 BOX-3 同款：HA 据此把设备识别为 Assist Satellite，
+#      设备页才有 wake word 状态；TTS 经 announcement 管线出声）----
+media_player:
+  - platform: speaker
+    name: None
+    id: speaker_media_player
+    announcement_pipeline:
+      speaker: dsp_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 2   # 与 dsp_speaker stereo 一致
+
 # ---- HA 语音助手管线（音频流给 HA assist 处理）----
 voice_assistant:
   id: va
   microphone: dsp_mic
-  speaker: dsp_speaker
+  media_player: speaker_media_player   # 官方 BOX-3 用法：经 media_player 出声，HA 才建 Assist Satellite
   micro_wake_word: mww
   noise_suppression_level: 2
   auto_gain: 31dBFS
