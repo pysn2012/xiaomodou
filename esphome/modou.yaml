@@ -164,24 +164,22 @@ display:
       - [0x29]              # DISPON
       - delay 50ms
     lambda: |-
-      // 状态页（中文）+ 对话内容页；顶部：IP 左 / 电量右（DSP FAIL 时覆盖右侧）
+      // 状态页（中文，全黑底白字）；顶部右侧：电量（DSP FAIL 优先提示）
       Color bg(0, 0, 0);
       const char *title = "";
       bool center = true;
       switch (id(va_phase)) {
-        case 1:  bg = Color(0, 90, 0);    title = "说 Okay Nabu"; break;
-        case 2:  bg = Color(0, 0, 160);   title = "聆听中…";       break;
-        case 3:  bg = Color(170, 80, 0);  title = "你问：";  center = false; break;
-        case 4:  bg = Color(160, 0, 160); title = "回复：";  center = false; break;
-        case 11: bg = Color(170, 0, 0);   title = "出错了";        break;
-        case 12: bg = Color(60, 60, 60);  title = "静音";          break;
+        case 1:  bg = Color(0, 0, 0);     title = "说 Okay Nabu"; break;
+        case 2:  bg = Color(0, 0, 0);     title = "聆听中…";       break;
+        case 3:  bg = Color(0, 0, 0);     title = "你问：";  center = false; break;
+        case 4:  bg = Color(0, 0, 0);     title = "回复：";  center = false; break;
+        case 11: bg = Color(0, 0, 0);     title = "出错了";        break;
+        case 12: bg = Color(0, 0, 0);     title = "静音";          break;
         default: bg = Color(0, 0, 0);     title = "未连接HA";      break;
       }
       it.fill(bg);
 
-      // ---- 顶部诊断行：IP 左，电量右（DSP FAIL 优先提示）----
-      it.printf(0, 0, id(font_small), Color::WHITE, TextAlign::TOP_LEFT, "%s",
-                id(ip_addr).state.c_str());
+      // ---- 顶部右侧：DSP FAIL 优先提示，否则显示电量 ----
       if (!id(dsp).is_boot_ok()) {
         it.printf(it.get_width(), 0, id(font_small), Color(255, 80, 80),
                   TextAlign::TOP_RIGHT, "DSP FAIL");
