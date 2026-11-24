@@ -1,6 +1,7 @@
 #include "zl38063.h"
 #include "esphome/core/log.h"
 #include "driver/gpio.h"
+#include "soc/gpio_struct.h"  // GPIO.out 寄存器直读（pad 快照），防传递包含缺失
 
 namespace esphome {
 namespace zl38063 {
@@ -361,7 +362,9 @@ bool Zl38063Component::full_boot_() {
 // 0x19 按键前端：原厂在 DSP 复位脉冲之前初始化（modou_dsp_keys.c factory_frontend_init 逐行移植）
 void Zl38063Component::frontend_init_() {
   uint8_t id = 0;
-  if (!this->read_byte(0x0f, &id)) {
+  // read_byte 在两个基类（spi::SPIDevice 的无参 SPI 读 / i2c::I2CDevice 的寄存器读）同名，
+  // 必须显式限定 i2c 版本，否则跨基类名字查找歧义（CI 编译报 ambiguous）
+  if (!this->i2c::I2CDevice::read_byte(0x0f, &id)) {
     ESP_LOGW(TAG, "0x19 frontend not detected on I2C");
     return;
   }
