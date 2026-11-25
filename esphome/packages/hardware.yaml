@@ -1,0 +1,60 @@
+# 硬件：I2C / SPI / AW9106 / ZL38063 / I2S 音频链路
+# 引脚与初始化顺序均为板上实测结论，勿随意改动
+
+# ---- I2C（AW9106 + ZL38063 0x19 按键前端共用）----
+i2c:
+  - id: i2c_bus
+    sda: 18
+    scl: 23
+    frequency: 100kHz
+
+# ---- SPI2（屏幕与 DSP HBI 共享总线）----
+spi:
+  - id: spi_bus
+    clk_pin: 32
+    mosi_pin: 33
+    miso_pin: 34
+
+# ---- 自研组件：AW9106（LCD 电源/背光，开机最先初始化）----
+aw9106:
+  id: aw9106_hub
+  backlight:
+    name: Screen Backlight
+    restore_mode: ALWAYS_ON
+
+# ---- 自研组件：ZL38063 DSP HBI 启动（固件 3699 块内嵌，开机自动 boot）----
+zl38063:
+  id: dsp
+  cs_pin:
+    number: 0
+    ignore_strapping_warning: true
+  reset_pin: 19
+  data_rate: 10MHz
+  # 0x19 按键前端（ID 0x11）：原厂在 DSP 复位前初始化，勿删
+  i2c_id: i2c_bus
+  address: 0x19
+
+# ---- I2S 音频总线（BCK=5 WS=25；DSP 是 slave，ESP32 出时钟；mic/speaker 同总线分时复用）----
+i2s_audio:
+  - id: i2s_bus
+    i2s_bclk_pin: GPIO5
+
+microphone:
+  - platform: i2s_audio
+    id: dsp_mic
+    i2s_audio_id: i2s_bus
+    i2s_din_pin: GPIO35
+    adc_type: external
+    bits_per_sample: 16bit
+    sample_rate: 16000   # mWW/VA 强制 16k（板上实测 DSP 可从机同步）
+    channel: stereo
+
+speaker:
+  - platform: i2s_audio
+    id: dsp_speaker
+    i2s_audio_id: i2s_bus
+    i2s_dout_pin: GPIO26
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 48000
+    channel: stereo

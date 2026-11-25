@@ -1,0 +1,116 @@
+# 语音助手链路：设备端唤醒词 + 媒体播放器 + HA 管线 + 静音开关 + PTT 键
+
+# ---- 设备端唤醒词（okay_nabu + 自研"魔豆"模型；不写 microphone 键，VA 持有 mic 联动取流）----
+micro_wake_word:
+  id: mww
+  models:
+    - models/okay_nabu.json   # 本地模型（json+tflite 已入库，本地/CI 都不再联网下载）
+    - models/modou.json
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+# ---- 媒体播放器（官方 BOX-3 同款：HA 据此把设备识别为 Assist Satellite）----
+media_player:
+  - platform: speaker
+    name: None
+    id: speaker_media_player
+    announcement_pipeline:
+      speaker: dsp_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 2   # 与 dsp_speaker stereo 一致
+
+# ---- HA 语音助手管线（音频流给 HA assist 处理）----
+voice_assistant:
+  id: va
+  microphone: dsp_mic
+  media_player: speaker_media_player   # 经 media_player 出声，HA 才建 Assist Satellite
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_client_connected:
+    - lambda: |
+        id(init_in_progress) = false;
+        id(va_phase) = ${voice_assist_idle_phase_id};
+    - script.execute: start_wake_word
+    - script.execute: draw_display
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - lambda: id(va_phase) = ${voice_assist_not_ready_phase_id};
+    - script.execute: draw_display
+  on_listening:
+    - lambda: id(va_phase) = ${voice_assist_listening_phase_id};
+    - text_sensor.template.publish:
+        id: text_request
+        state: "..."
+    - text_sensor.template.publish:
+        id: text_response
+        state: "..."
+    - script.execute: draw_display
+  on_stt_end:
+    - lambda: id(va_phase) = ${voice_assist_thinking_phase_id};
+    - text_sensor.template.publish:
+        id: text_request
+        state: !lambda return x;
+    - script.execute: draw_display
+  on_tts_start:
+    - lambda: id(va_phase) = ${voice_assist_replying_phase_id};
+    - text_sensor.template.publish:
+        id: text_response
+        state: !lambda return x;
+    - script.execute: draw_display
+  on_end:
+    # 等播报结束（I2S 让出总线）再回到待机并重启唤醒词
+    - wait_until:
+        condition:
+          speaker.is_stopped:
+        timeout: 2s
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: start_wake_word
+  on_error:
+    - lambda: id(va_phase) = ${voice_assist_error_phase_id};
+    - script.execute: draw_display
+    - delay: 2s
+    - script.execute: set_idle_or_mute_phase
+    - script.execute: start_wake_word
+
+# ---- 按键 PTT（GPIO38：按下拉低；一按开始说，再说一次停止）----
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: 38
+      mode:
+        input: true
+      inverted: true
+    id: modou_key
+    filters:
+      - delayed_on: 20ms
+    on_press:
+      - if:
+          condition:
+            voice_assistant.is_running:
+          then:
+            - voice_assistant.stop:
+          else:
+            - script.execute: stop_wake_word
+            - voice_assistant.start:
+
+# ---- 软件静音开关 ----
+switch:
+  - platform: template
+    name: Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - microphone.mute:
+      - lambda: id(va_phase) = ${voice_assist_muted_phase_id};
+      - script.execute: draw_display
+    on_turn_off:
+      - microphone.unmute:
+      - lambda: id(va_phase) = ${voice_assist_idle_phase_id};
+      - script.execute: draw_display
