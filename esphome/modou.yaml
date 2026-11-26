@@ -1,58 +1,32 @@
 ---
-# 魔豆小车 ESPHome 语音助手固件（v0.5：多页面显示 + 配置包化）
+# 魔豆小车 ESPHome 语音助手固件（v0.4：骨架 + 屏幕/背光 + DSP 音频 + 设备端唤醒词 + HA 语音管线 + PTT）
 #
 # 硬件：ESP32-D0WD / 16MB Flash / 8MB PSRAM
 # 屏：ST7789 160x128 SPI（MOSI=33 SCLK=32 CS=27 DC=21 RST=22，40MHz，反转色）
 # DSP：ZL38063 HBI over SPI2（CS=GPIO0，RST=GPIO19），开机自动 boot（固件 blob 内嵌）
 # I2S：BCK=5 WS=25 DIN=35 DOUT=26，16bit（DSP 为 I2S slave，ESP32 出时钟）
-#      mic 16kHz（板上实测 DSP 可从机同步）+ speaker 48kHz，同总线分时复用
+#      mic 16kHz（mWW/VA 强制）+ speaker 48kHz，同总线分时复用
 # 键：GPIO38（按下拉低，外部上拉）→ 一按即说（push-to-talk）
 # 初始化顺序（板上实测结论）：AW9106 上电 → LCD SPI → DSP boot
 #
-# 唤醒词：设备端 mWW（okay_nabu + 自研"魔豆"模型）；识别/TTS 经 api 交给 HA assist
-# 屏幕：9 页面（packages/display.yaml），事件驱动切换（script.yaml draw_display）
-# 烧录：USB 首烧（factory.bin）；之后 OTA（见方案文档第六章 OTA 纪律）
+# 唤醒词：设备端 microWakeWord "okay nabu"（参考 BOX-3）；后续换中文模型改 models 即可
+# 语音识别/TTS：经 api 流式交给 Home Assistant assist 管线处理
+# 烧录：USB 首烧（factory.bin）；之后走 OTA
 
 substitutions:
   name: modou-box
   friendly_name: MoDu Box
 
-  # ---- 语音助手阶段 ID ----
-  voice_assist_idle_phase_id: "1"          # 空闲
-  voice_assist_listening_phase_id: "2"     # 聆听
-  voice_assist_thinking_phase_id: "3"      # 思考
-  voice_assist_replying_phase_id: "4"      # 回复
-  voice_assist_not_ready_phase_id: "10"    # 未连接 HA
-  voice_assist_error_phase_id: "11"        # 错误
-  voice_assist_muted_phase_id: "12"        # 静音
-
 esphome:
   name: ${name}
   friendly_name: ${friendly_name}
   name_add_mac_suffix: false
-  # 屏幕辅助绘制函数（display_helpers.h：问候语/电池图标行/文本换行）
-  # 注意：esphome.includes 是逐个拷贝到构建目录的（只拷这里列出的文件）
-  includes:
-    - display_helpers.h
-  on_boot:
-    priority: 600
-    then:
-      - script.execute: draw_display
-      - delay: 30s
-      - if:
-          condition:
-            lambda: return id(init_in_progress);
-          then:
-            - lambda: id(init_in_progress) = false;
-            - script.execute: draw_display
 
 esp32:
   board: esp32dev
   flash_size: 16MB
   framework:
     type: esp-idf
-    advanced:
-      compiler_optimization: PERF   # 默认 SIZE 侧重体积；PERF 提升运行速度（体积换性能，16MB 富余）
 
 psram:
   mode: quad
@@ -77,36 +51,278 @@ wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
   ap:
-  on_connect:
-    - script.execute: draw_display
-  on_disconnect:
-    - script.execute: draw_display
 
 captive_portal:
 
-# ---- 全局：VA 阶段（页面调度用）+ 初始化标记 ----
+# ---- 全局：语音助手阶段（显示状态页用）----
 # 1=待机 2=聆听 3=思考 4=应答 10=未连接 11=错误 12=静音
 globals:
-  - id: init_in_progress
-    type: bool
-    restore_value: false
-    initial_value: "true"
   - id: va_phase
     type: int
     restore_value: false
-    initial_value: ${voice_assist_not_ready_phase_id}
+    initial_value: "10"
 
-# ---- 自研组件（aw9106 / zl38063，source 相对本文件解析）----
+script:
+  # 启动设备端唤醒词（HA 已连接且 VA 空闲时才启动）
+  - id: start_wake_word
+    then:
+      - if:
+          condition:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - api.connected:
+          then:
+            - micro_wake_word.start:
+
+  - id: stop_wake_word
+    then:
+      - micro_wake_word.stop:
+
+# ---- I2C（AW9106 专用）----
+i2c:
+  - id: i2c_bus
+    sda: 18
+    scl: 23
+    frequency: 100kHz
+
+# ---- 自研组件：AW9106（LCD 电源/背光，开机最先初始化）----
 external_components:
   - source: components
     components: [aw9106, zl38063]
 
-# ---- 配置包 ----
-packages:
-  hardware: !include packages/hardware.yaml    # I2C/SPI/AW9106/ZL38063/I2S
-  fonts: !include packages/fonts.yaml          # 字体（含 MDI 图标）
-  time: !include packages/time.yaml            # HA 时间源
-  sensor: !include packages/sensor.yaml        # 电池/文本/IP/API 状态
-  script: !include packages/script.yaml        # draw_display 等脚本
-  display: !include packages/display.yaml      # 9 页面
-  voice: !include packages/voice.yaml          # mWW/VA/媒体播放器/PTT
+aw9106:
+  id: aw9106_hub
+  backlight:
+    name: Screen Backlight
+    restore_mode: ALWAYS_ON
+
+# ---- SPI2（屏幕与 DSP HBI 共享总线）----
+spi:
+  - id: spi_bus
+    clk_pin: 32
+    mosi_pin: 33
+    miso_pin: 34
+
+# ---- 自研组件：ZL38063 DSP HBI 启动（固件 3699 块内嵌，开机自动 boot）----
+zl38063:
+  id: dsp
+  cs_pin:
+    number: 0
+    ignore_strapping_warning: true
+  reset_pin: 19
+  data_rate: 10MHz
+  # 0x19 按键前端（ID 0x11）：原厂在 DSP 复位前初始化，勿删
+  i2c_id: i2c_bus
+  address: 0x19
+
+# ---- 屏幕：ST7789 160x128，CUSTOM 模型重放原厂 18 条初始化序列 ----
+# 几何定案（对齐 mpy 板测结论 MADCTL=0xA0）：transform swap_xy+mirror_y = MV|MY = 0xA0，
+# swap_xy 时 dimensions 填旋转后的最终画布 160x128（mipi_spi 官方文档语义）。
+# 若板测发现图像上下颠倒 → 加 mirror_x: true；左右镜像 → 改 mirror_x/mirror_y 组合；
+# 红蓝反色 → color_order 改 bgr。
+display:
+  - platform: mipi_spi
+    model: CUSTOM
+    id: modou_lcd
+    dimensions:
+      width: 160
+      height: 128
+    transform:
+      swap_xy: true
+      mirror_x: false    # transform 三键必填
+      mirror_y: true
+    cs_pin: 27
+    dc_pin: 21
+    reset_pin: 22
+    data_rate: 40MHz
+    color_order: rgb
+    invert_colors: false   # 0x21 已在 init_sequence 里，不再让驱动重复发
+    update_interval: 1s
+    init_sequence:
+      - [0xC0, 0x00]
+      - delay 20ms
+      - [0xC2, 0x01, 0xFF]
+      - [0xC3, 0x13]
+      - [0xC4, 0x20]
+      - [0xC6, 0x0F]
+      - [0xCA, 0x0F]
+      - [0xC8, 0x08]
+      - [0x55, 0xB0]
+      - [0x21, 0x00]        # INVON（原厂带参数写法，照抄）
+      - [0xB1, 0x40, 0x02, 0x14]
+      - [0x26, 0x01]        # GAMSET
+      - [0x2A, 0x00, 0x00, 0x00, 0xEF]
+      - [0x2B, 0x00, 0x00, 0x01, 0x3F]
+      - [0x2C, 0x00]
+      - [0xE0, 0xD0, 0x00, 0x05, 0x0E, 0x15, 0x0D, 0x37, 0x43, 0x47, 0x09, 0x15, 0x12, 0x16, 0x19]
+      - [0xE1, 0xD0, 0x00, 0x05, 0x0D, 0x0C, 0x06, 0x2D, 0x44, 0x40, 0x0E, 0x1C, 0x18, 0x16, 0x19]
+      - [0x11]              # SLPOUT
+      - delay 120ms
+      - [0x29]              # DISPON
+      - delay 50ms
+    lambda: |-
+      // 语音助手状态页（文字先英文，后续换中文字体）
+      const char *text = "";
+      Color bg(0, 0, 0);
+      switch (id(va_phase)) {
+        case 1:  bg = Color(0, 90, 0);    text = "IDLE";      break;
+        case 2:  bg = Color(0, 0, 160);   text = "LISTENING"; break;
+        case 3:  bg = Color(170, 80, 0);  text = "THINKING";  break;
+        case 4:  bg = Color(160, 0, 160); text = "REPLYING";  break;
+        case 11: bg = Color(170, 0, 0);   text = "ERROR";     break;
+        case 12: bg = Color(60, 60, 60);  text = "MUTED";     break;
+        default: bg = Color(0, 0, 0);     text = "NOT READY"; break;
+      }
+      it.fill(bg);
+      it.printf(it.get_width() / 2, it.get_height() / 2, id(font_status),
+                Color::WHITE, TextAlign::CENTER, "%s", text);
+      // ---- 启动诊断行（顶部）：IP + 组件状态，开机自检不用翻日志 ----
+      it.printf(0, 0, id(font_small), Color::WHITE, TextAlign::TOP_LEFT, "%s",
+                id(ip_addr).state.c_str());
+      if (!id(dsp).is_boot_ok())
+        it.printf(it.get_width(), 0, id(font_small), Color(255, 80, 80),
+                  TextAlign::TOP_RIGHT, "DSP FAIL");
+
+font:
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_status
+    size: 20
+    glyphsets: GF_Latin_Kernel
+  - file:
+      type: gfonts
+      family: Roboto
+      weight: 400
+    id: font_small
+    size: 12
+    glyphsets: GF_Latin_Kernel
+
+# WiFi IP 上屏用（屏幕顶部诊断行）
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: ip_addr
+      name: IP Address
+
+# ---- I2S 音频总线（BCK=5 WS=25；DSP 是 slave，ESP32 出时钟；mic/speaker 同总线分时复用）----
+i2s_audio:
+  - id: i2s_bus
+    i2s_bclk_pin: GPIO5
+    i2s_lrclk_pin: GPIO25
+
+microphone:
+  - platform: i2s_audio
+    id: dsp_mic
+    i2s_audio_id: i2s_bus
+    i2s_din_pin: GPIO35
+    adc_type: external
+    bits_per_sample: 16bit
+    sample_rate: 16000   # mWW/VA 强制要求 16k（DSP 原厂配 48k，能否从机同步待板上验证）
+    channel: stereo
+
+speaker:
+  - platform: i2s_audio
+    id: dsp_speaker
+    i2s_audio_id: i2s_bus
+    i2s_dout_pin: GPIO26
+    dac_type: external
+    bits_per_sample: 16bit
+    sample_rate: 48000
+    channel: stereo
+
+# ---- 设备端唤醒词（microWakeWord，okay_nabu；换中文模型改这里）----
+# 写法照抄 BOX-3：不写 microphone 键（VA 持有 mic，mWW 经 VA 联动取流）
+micro_wake_word:
+  id: mww
+  models:
+    - models/okay_nabu.json   # 本地模型（json+tflite 已入库，本地/CI 都不再联网下载）
+  on_wake_word_detected:
+    - voice_assistant.start:
+        wake_word: !lambda return wake_word;
+
+# ---- 媒体播放器（官方 BOX-3 同款：HA 据此把设备识别为 Assist Satellite，
+#      设备页才有 wake word 状态；TTS 经 announcement 管线出声）----
+media_player:
+  - platform: speaker
+    name: None
+    id: speaker_media_player
+    announcement_pipeline:
+      speaker: dsp_speaker
+      format: FLAC
+      sample_rate: 48000
+      num_channels: 2   # 与 dsp_speaker stereo 一致
+
+# ---- HA 语音助手管线（音频流给 HA assist 处理）----
+voice_assistant:
+  id: va
+  microphone: dsp_mic
+  media_player: speaker_media_player   # 官方 BOX-3 用法：经 media_player 出声，HA 才建 Assist Satellite
+  micro_wake_word: mww
+  noise_suppression_level: 2
+  auto_gain: 31dBFS
+  volume_multiplier: 2.0
+  on_client_connected:
+    - lambda: id(va_phase) = 1;
+    - script.execute: start_wake_word
+  on_client_disconnected:
+    - script.execute: stop_wake_word
+    - lambda: id(va_phase) = 10;
+  on_listening:
+    - lambda: id(va_phase) = 2;
+  on_stt_end:
+    - lambda: id(va_phase) = 3;
+  on_tts_start:
+    - lambda: id(va_phase) = 4;
+  on_end:
+    # 等播报结束（I2S 让出总线）再回到待机并重启唤醒词
+    - wait_until:
+        condition:
+          speaker.is_stopped:
+        timeout: 2s
+    - lambda: id(va_phase) = 1;
+    - script.execute: start_wake_word
+  on_error:
+    - lambda: id(va_phase) = 11;
+    - delay: 2s
+    - lambda: id(va_phase) = 1;
+    - script.execute: start_wake_word
+
+# ---- 按键 PTT（GPIO38：按下拉低；一按开始说，再说一次停止）----
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: 38
+      mode:
+        input: true
+      inverted: true
+    id: modou_key
+    filters:
+      - delayed_on: 20ms
+    on_press:
+      - if:
+          condition:
+            voice_assistant.is_running:
+          then:
+            - voice_assistant.stop:
+          else:
+            - script.execute: stop_wake_word
+            - voice_assistant.start:
+
+# ---- 软件静音开关 ----
+switch:
+  - platform: template
+    name: Mute
+    id: mute
+    icon: "mdi:microphone-off"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+    entity_category: config
+    on_turn_on:
+      - microphone.mute:
+      - lambda: id(va_phase) = 12;
+    on_turn_off:
+      - microphone.unmute:
+      - lambda: id(va_phase) = 1;

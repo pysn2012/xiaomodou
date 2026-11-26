@@ -21,13 +21,10 @@ namespace zl38063 {
 //   5. cmd 0x0008 -> 配置对加载（1042 对）-> 出厂 post-boot 寄存器 -> start kick 0x0006=0x0002
 //
 // 引导策略阶梯（失败自动升级，全部带日志）：
-//   尝试 1  ：ESPHome SPI 设备（GPIO CS@10MHz，CS 逐字包裹——已修复的根因，理论即通）
-//   尝试 2+ ：原厂复刻——IDF 裸设备（硬件 CS=GPIO0，mode0，10MHz），与 mpy 时代
-//             st7789+dsp 共存拓扑完全一致；若此路径引导成功，裸设备即最终方案
-//
-// ⚠️ 根因记录（2026-11-24）：ESPHome IDF 后端 spics_io_num=-1，write_array/transfer_array
-//    不带 CS 断言——HBI 每个字必须 enable(); write; disable(); 逐字包裹（已修复）。
-//    此前"探针全 0x0000"即由此而来，与 GPIO-CS 模式、0x19 门控均无关。
+//   尝试 1-2：ESPHome SPI 设备（GPIO CS），10MHz / 1MHz
+//   尝试 3+ ：原厂复刻——IDF 裸设备（硬件 CS=GPIO0，mode0，10MHz），与 mpy 时代
+//             st7789+dsp 共存拓扑完全一致；若此路径引导成功，则根因=ESPHome
+//             GPIO-CS 事务模式，裸设备即最终方案
 //
 // 注意：
 //   - AW9106（HARDWARE，yaml 里声明在前）必须先跑——LCD/DSP 电源挂在它上面
