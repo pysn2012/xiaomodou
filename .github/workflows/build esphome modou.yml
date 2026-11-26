@@ -3,7 +3,9 @@ name: build esphome modou
 # 魔豆小车 ESPHome 语音助手固件在线编译
 # 配置：esphome/modou.yaml（自研 external component：components/aw9106 背光 + components/zl38063 DSP）
 # 密钥：编译前用 GitHub Secrets（WIFI_SSID/WIFI_PASSWORD）动态生成 esphome/secrets.yaml
-# 版本：固定 2026.8.2，与本地 esphome CLI 校验版本一致，避免上游升级导致编译差异
+# 版本：beta（2026.11.0b，2026-11-26 时点）——micro_wake_word 新增 prefer_internal_ram /
+# ring_buffer_duration / task_core 三个性能选项均为 2026.11.0 引入，D0WD 双模型调优必需；
+# 稳定版（2026.9.1）尚未包含。CI 编译兼做配置校验；若 beta 出问题，改回 "2026.8.2" 即回退。
 
 on:
   workflow_dispatch:
@@ -13,7 +15,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ESPHOME_VERSION: "2026.8.2"
+  ESPHOME_VERSION: "beta"
 
 jobs:
   build:

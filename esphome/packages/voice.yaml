@@ -1,11 +1,18 @@
 # 语音助手链路：设备端唤醒词 + 媒体播放器 + HA 管线 + 静音开关 + PTT 键
 
 # ---- 设备端唤醒词（okay_nabu + 自研"魔豆"模型；不写 microphone 键，VA 持有 mic 联动取流）----
+# 2026-11-26 性能调优（官方文档旋钮，治 D0WD 双模型推理超实时）：
+#   prefer_internal_ram: 模型权重+tensor arena 优先放内部 SRAM（PSRAM 访问慢得多），直接降推理耗时
+#   ring_buffer_duration: 120ms→800ms，缓冲加深吸收推理抖动，不再频繁 reset 丢音频（多占 21KB RAM，可忽略）
+#   task_core: 1 推理任务绑核 1，与主循环（display 渲染等）分核；文档要求"实测有争用才启用"，我们有实测证据
 micro_wake_word:
   id: mww
+  prefer_internal_ram: true
+  ring_buffer_duration: 800ms
+  task_core: 1
   models:
     - models/okay_nabu.json   # 本地模型（json+tflite 已入库，本地/CI 都不再联网下载）
-    #- models/modou.json
+    - models/modou.json
   on_wake_word_detected:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;

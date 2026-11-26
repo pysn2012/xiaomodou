@@ -51,6 +51,8 @@ esp32:
   flash_size: 16MB
   framework:
     type: esp-idf
+    advanced:
+      compiler_optimization: PERF   # 默认 SIZE 侧重体积；PERF 提升运行速度（体积换性能，16MB 富余）
 
 psram:
   mode: quad
