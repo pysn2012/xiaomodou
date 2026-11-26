@@ -5,7 +5,7 @@ micro_wake_word:
   id: mww
   models:
     - models/okay_nabu.json   # 本地模型（json+tflite 已入库，本地/CI 都不再联网下载）
-    - models/modou.json
+    #- models/modou.json
   on_wake_word_detected:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;

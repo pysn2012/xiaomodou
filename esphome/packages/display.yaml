@@ -17,7 +17,9 @@ display:
     reset_pin: 22
     data_rate: 40MHz
     color_order: rgb
-    invert_colors: false   # 0x21 已在 init_sequence 里，不再让驱动重复发
+    invert_colors: true    # 关键：驱动 setup() 末尾的 reset_params_() 会按此值补发 INVON/INVOFF（L289），
+                           # 默认 false 会发 INVOFF 把 init_sequence 里 0x21 的原厂反转设置关掉 → 屏显反色（白底黑字）。
+                           # true = 最终状态 INVON，与原厂一致，帧缓冲黑底→屏显黑底
     update_interval: 1s    # 每秒重绘当前页（idle 时钟秒级跳动必需；160x128@40MHz 每帧约 8ms）
     init_sequence:
       - [0xC0, 0x00]
